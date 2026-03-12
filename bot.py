@@ -1,157 +1,184 @@
 import pandas as pd
+import numpy as np
 import requests
 import time
-import json
 import os
 from datetime import datetime
-from strategy import generate_signal
-from config import *
 
+# ==========================================================
+# CONFIG
+# ==========================================================
+ASSETS = ["BTC","ETH","SOL"]
+TIMEFRAME = "3m"
+LOOKBACK = 200
+EMA_PERIOD = 20
+ATR_PERIOD = 14
+EDGE_THRESHOLD = 0.003
+ATR_MULT = 1.5
+TP_EDGE = 0.30
+BASE_URL = "https://api.binance.com/api/v3/klines"
 POSITION = None
 
-# ---------------- LOG ----------------
-def log(msg):
-    text = f"{datetime.utcnow()} | {msg}"
-    print(text)
-    os.makedirs(os.path.dirname(BOT_LOG), exist_ok=True)
-    with open(BOT_LOG, "a") as f:
-        f.write(text + "\n")
+# Paths para reportes
+REPORT_DIR = "reports"
+TRADES_FILE = "trades.csv"
+METRICS_FILE = "metrics.json"
+LOOP_DELAY = 60
+REPORT_INTERVAL = 300  # 5 minutos
+LAST_REPORT = 0
 
-# ---------------- METRICS ----------------
-def load_metrics():
-    os.makedirs(os.path.dirname(METRICS_FILE), exist_ok=True)
-    if not os.path.exists(METRICS_FILE):
-        data = {"capital": INITIAL_CAPITAL, "trades":0, "wins":0, "losses":0}
-        with open(METRICS_FILE, "w") as f:
-            json.dump(data, f)
-    with open(METRICS_FILE) as f:
-        return json.load(f)
-
-def save_metrics(metrics):
-    with open(METRICS_FILE, "w") as f:
-        json.dump(metrics, f, indent=4)
-
-# ---------------- STATE ----------------
-def save_state(pos):
-    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-    with open(STATE_FILE, "w") as f:
-        json.dump(pos, f)
-
-def load_state():
-    if not os.path.exists(STATE_FILE):
-        return None
-    with open(STATE_FILE) as f:
-        return json.load(f)
-
-# ---------------- DATA ----------------
+# ==========================================================
+# DATA
+# ==========================================================
 def fetch(symbol):
-    interval_map = {"1m":"1min","3min":"3min","5min":"5min","15min":"15min","1h":"1hour","1day":"1day"}
     params = {
-        "symbol": f"{symbol}-USDT",
-        "type": interval_map.get(TIMEFRAME,"3min"),
+        "symbol": f"{symbol}USDT",
+        "interval": TIMEFRAME,
         "limit": LOOKBACK
     }
     r = requests.get(BASE_URL, params=params)
     data = r.json()
-    if "data" not in data:
-        raise Exception(f"FETCH ERROR {symbol} {data}")
-    df = pd.DataFrame(data["data"], columns=["time","open","close","high","low","volume","turnover"])
-    df[['open','high','low','close','volume']] = df[['open','high','low','close','volume']].astype(float)
-    df = df.sort_values("time").reset_index(drop=True)
+    df = pd.DataFrame(data, columns=[
+        "open_time","open","high","low","close","volume",
+        "close_time","qav","num_trades",
+        "taker_base_vol","taker_quote_vol","ignore"
+    ])
+    df[['open','high','low','close']] = df[['open','high','low','close']].astype(float)
     return df
 
-# ---------------- SCAN ----------------
+# ==========================================================
+# ATR
+# ==========================================================
+def atr(df):
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+    tr1 = high - low
+    tr2 = abs(high - close.shift())
+    tr3 = abs(low - close.shift())
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    return tr.rolling(ATR_PERIOD).mean()
+
+# ==========================================================
+# SCANNER
+# ==========================================================
 def scan():
     signals = []
     for asset in ASSETS:
-        try:
-            df = fetch(asset)
-            signal = generate_signal(df, asset)
-            if signal:
-                signals.append(signal)
-        except Exception as e:
-            log(f"SCAN ERROR {asset} {e}")
-    if not signals:
+        df = fetch(asset)
+        ema = df["close"].ewm(span=EMA_PERIOD).mean()
+        atr_val = atr(df).iloc[-1]
+        price = df["close"].iloc[-1]
+        ema_val = ema.iloc[-1]
+        deviation = (price - ema_val)/ema_val
+        edge = abs(deviation)
+        if edge < EDGE_THRESHOLD:
+            continue
+        tp_move = edge * TP_EDGE
+        sl_move = (atr_val/price)*ATR_MULT
+        if deviation < 0:
+            direction = "LONG"
+            tp = price*(1+tp_move)
+            sl = price*(1-sl_move)
+        else:
+            direction = "SHORT"
+            tp = price*(1-tp_move)
+            sl = price*(1+sl_move)
+        signals.append({
+            "asset": asset,
+            "direction": direction,
+            "entry": price,
+            "tp": tp,
+            "sl": sl,
+            "edge": edge,
+            "mfe": 0,
+            "mae": 0
+        })
+    if len(signals) == 0:
         return None
     return max(signals, key=lambda x:x["edge"])
 
-# ---------------- CHECK POSITION ----------------
+# ==========================================================
+# CHECK POSITION
+# ==========================================================
 def check_position(pos):
     df = fetch(pos["asset"])
     price = df["close"].iloc[-1]
     move = (price - pos["entry"]) / pos["entry"] if pos["direction"]=="LONG" else (pos["entry"] - price)/pos["entry"]
     pos["mfe"] = max(pos["mfe"], move)
     pos["mae"] = min(pos["mae"], move)
-
     if pos["direction"]=="LONG":
-        if price >= pos["tp"]:
-            return "TP", price, pos
-        if price <= pos["sl"]:
-            return "SL", price, pos
+        if price >= pos["tp"]: return "TP", price
+        if price <= pos["sl"]: return "SL", price
     else:
-        if price <= pos["tp"]:
-            return "TP", price, pos
-        if price >= pos["sl"]:
-            return "SL", price, pos
-    return None, price, pos
+        if price <= pos["tp"]: return "TP", price
+        if price >= pos["sl"]: return "SL", price
+    return None, price
 
-# ---------------- SAVE TRADE ----------------
-def save_trade(trade):
-    os.makedirs(os.path.dirname(TRADES_FILE), exist_ok=True)
-    df = pd.DataFrame([trade])
-    if not os.path.exists(TRADES_FILE):
-        df.to_csv(TRADES_FILE, index=False)
-    else:
-        df.to_csv(TRADES_FILE, mode="a", header=False, index=False)
+# ==========================================================
+# REPORTS
+# ==========================================================
+def save_report():
+    os.makedirs(REPORT_DIR, exist_ok=True)
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    report_file = os.path.join(REPORT_DIR, f"report_{timestamp}.txt")
+    trades = pd.read_csv(TRADES_FILE) if os.path.exists(TRADES_FILE) else pd.DataFrame()
+    metrics = pd.read_json(METRICS_FILE) if os.path.exists(METRICS_FILE) else {}
+    with open(report_file, "w") as f:
+        f.write("=== TRADES ===\n")
+        f.write(trades.to_string(index=False))
+        f.write("\n\n=== METRICS ===\n")
+        f.write(str(metrics))
 
-# ---------------- MAIN ----------------
-metrics = load_metrics()
-POSITION = load_state()
-log("KUCOIN BOT STARTED")
+# ==========================================================
+# MAIN LOOP
+# ==========================================================
+metrics = {"capital": 100, "trades":0, "wins":0, "losses":0}
 
 while True:
     try:
+        global LAST_REPORT
         if POSITION is None:
             signal = scan()
             if signal:
                 POSITION = signal
-                save_state(POSITION)
-                log(f"OPEN {signal}")
+                print(f"OPEN: {signal}")
             else:
-                log("NO SIGNAL")
+                print("No signal")
         else:
-            result, price, POSITION = check_position(POSITION)
+            result, price = check_position(POSITION)
             if result:
                 entry = POSITION["entry"]
                 pnl = (price-entry)/entry if POSITION["direction"]=="LONG" else (entry-price)/entry
                 metrics["capital"] *= 1 + pnl
                 metrics["trades"] += 1
-                if pnl > 0:
+                if pnl>0:
                     metrics["wins"] += 1
                 else:
                     metrics["losses"] += 1
-                winrate = metrics["wins"]/metrics["trades"]
-                trade_data = {
+                trade_record = {
                     "time": datetime.utcnow(),
-                    "asset": POSITION["asset"],
-                    "direction": POSITION["direction"],
-                    "entry": entry,
+                    **POSITION,
                     "exit": price,
                     "pnl": pnl,
-                    "mfe": POSITION["mfe"],
-                    "mae": POSITION["mae"],
                     "capital": metrics["capital"],
-                    "winrate": winrate
+                    "winrate": metrics["wins"]/metrics["trades"]
                 }
-                save_trade(trade_data)
-                save_metrics(metrics)
-                log(f"CLOSE {trade_data}")
+                # Guardar trade y métricas
+                os.makedirs(os.path.dirname(TRADES_FILE), exist_ok=True)
+                pd.DataFrame([trade_record]).to_csv(TRADES_FILE, mode="a", header=not os.path.exists(TRADES_FILE), index=False)
+                pd.DataFrame([metrics]).to_json(METRICS_FILE)
+                print(f"CLOSE: {trade_record}")
                 POSITION = None
-                save_state(None)
             else:
-                save_state(POSITION)
-                log("TRADE RUNNING")
+                print("Trade running...")
+
+        # Guardado de reportes cada 5 minutos
+        if time.time() - LAST_REPORT >= REPORT_INTERVAL:
+            save_report()
+            LAST_REPORT = time.time()
+
         time.sleep(LOOP_DELAY)
     except Exception as e:
-        log(f"MAIN ERROR {e}")
+        print("ERROR:", e)
         time.sleep(LOOP_DELAY)
