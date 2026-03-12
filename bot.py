@@ -9,6 +9,7 @@ from config import *
 
 POSITION = None
 
+# ---------------- LOG ----------------
 def log(msg):
     text = f"{datetime.utcnow()} | {msg}"
     print(text)
@@ -16,6 +17,7 @@ def log(msg):
     with open(BOT_LOG, "a") as f:
         f.write(text + "\n")
 
+# ---------------- METRICS ----------------
 def load_metrics():
     os.makedirs(os.path.dirname(METRICS_FILE), exist_ok=True)
     if not os.path.exists(METRICS_FILE):
@@ -25,10 +27,11 @@ def load_metrics():
     with open(METRICS_FILE) as f:
         return json.load(f)
 
-def save_metrics(m):
+def save_metrics(metrics):
     with open(METRICS_FILE, "w") as f:
-        json.dump(m, f, indent=4)
+        json.dump(metrics, f, indent=4)
 
+# ---------------- STATE ----------------
 def save_state(pos):
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
     with open(STATE_FILE, "w") as f:
@@ -40,28 +43,24 @@ def load_state():
     with open(STATE_FILE) as f:
         return json.load(f)
 
+# ---------------- DATA ----------------
 def fetch(symbol):
-    """Obtiene OHLCV de KuCoin"""
-    interval_map = {
-        "1m":"1min", "3min":"3min", "5min":"5min",
-        "15min":"15min", "1h":"1hour", "1day":"1day"
-    }
+    interval_map = {"1m":"1min","3min":"3min","5min":"5min","15min":"15min","1h":"1hour","1day":"1day"}
     params = {
         "symbol": f"{symbol}-USDT",
-        "type": interval_map.get(TIMEFRAME, "3min"),
+        "type": interval_map.get(TIMEFRAME,"3min"),
         "limit": LOOKBACK
     }
     r = requests.get(BASE_URL, params=params)
     data = r.json()
     if "data" not in data:
         raise Exception(f"FETCH ERROR {symbol} {data}")
-    df = pd.DataFrame(data["data"], columns=[
-        "time","open","close","high","low","volume","turnover"
-    ])
+    df = pd.DataFrame(data["data"], columns=["time","open","close","high","low","volume","turnover"])
     df[['open','high','low','close','volume']] = df[['open','high','low','close','volume']].astype(float)
     df = df.sort_values("time").reset_index(drop=True)
     return df
 
+# ---------------- SCAN ----------------
 def scan():
     signals = []
     for asset in ASSETS:
@@ -72,17 +71,18 @@ def scan():
                 signals.append(signal)
         except Exception as e:
             log(f"SCAN ERROR {asset} {e}")
-    if len(signals) == 0:
+    if not signals:
         return None
     return max(signals, key=lambda x:x["edge"])
 
+# ---------------- CHECK POSITION ----------------
 def check_position(pos):
     df = fetch(pos["asset"])
     price = df["close"].iloc[-1]
-    entry = pos["entry"]
-    move = (price-entry)/entry if pos["direction"]=="LONG" else (entry-price)/entry
+    move = (price - pos["entry"]) / pos["entry"] if pos["direction"]=="LONG" else (pos["entry"] - price)/pos["entry"]
     pos["mfe"] = max(pos["mfe"], move)
     pos["mae"] = min(pos["mae"], move)
+
     if pos["direction"]=="LONG":
         if price >= pos["tp"]:
             return "TP", price, pos
@@ -95,6 +95,7 @@ def check_position(pos):
             return "SL", price, pos
     return None, price, pos
 
+# ---------------- SAVE TRADE ----------------
 def save_trade(trade):
     os.makedirs(os.path.dirname(TRADES_FILE), exist_ok=True)
     df = pd.DataFrame([trade])
@@ -103,9 +104,7 @@ def save_trade(trade):
     else:
         df.to_csv(TRADES_FILE, mode="a", header=False, index=False)
 
-# =========================
-# MAIN LOOP
-# =========================
+# ---------------- MAIN ----------------
 metrics = load_metrics()
 POSITION = load_state()
 log("KUCOIN BOT STARTED")
