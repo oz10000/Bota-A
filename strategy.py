@@ -1,14 +1,5 @@
 import pandas as pd
-
-EMA_PERIOD = 20
-ATR_PERIOD = 14
-EDGE_THRESHOLD = 0.003
-ATR_MULTIPLIER = 1.5
-TP_OPTIMAL = {
-    "BTC":0.50,
-    "ETH":0.30,
-    "SOL":0.50
-}
+from config import *
 
 def compute_atr(df):
     high = df["high"]
@@ -21,22 +12,18 @@ def compute_atr(df):
     return tr.rolling(ATR_PERIOD).mean()
 
 def generate_signal(df, asset):
-    """Devuelve dict de trade o None"""
+    """Genera señal de trade o None"""
     ema = df["close"].ewm(span=EMA_PERIOD).mean()
-    atr = compute_atr(df)
-
+    atr_val = compute_atr(df).iloc[-1]
     price = df["close"].iloc[-1]
     ema_val = ema.iloc[-1]
-    atr_val = atr.iloc[-1]
 
     deviation = (price - ema_val) / ema_val
     edge = abs(deviation)
-
     if edge < EDGE_THRESHOLD:
         return None
 
-    tp_coef = TP_OPTIMAL[asset]
-    tp_move = edge * tp_coef
+    tp_move = edge * TP_EDGE
     sl_move = (atr_val / price) * ATR_MULTIPLIER
 
     if deviation < 0:
