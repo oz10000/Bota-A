@@ -1,14 +1,14 @@
-name: Run KuCoin Bot Live Persistent
+name: Run KuCoin Bot Simulation
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:       # Lanzamiento manual
   schedule:
-    - cron: "*/10 * * * *"  # Opcional
+    - cron: "*/10 * * * *" # Opcional: iniciar cada 10 minutos
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 30      # Tiempo suficiente para generar reportes
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -22,15 +22,24 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run bot
+      - name: Run bot and wait for first report
         run: |
           echo "Starting KuCoin Bot..."
-          python bot.py &      # Corre en background
-          BOT_PID=$!
-          sleep 300            # Espera 5 min (o el tiempo que quieras)
-          kill $BOT_PID || true
+          python - <<'EOF'
+import subprocess, time, os
 
-      - name: Upload reports
+# Ejecutar bot en segundo plano
+bot_process = subprocess.Popen(["python", "bot.py"])
+
+# Esperar suficiente para que se genere el primer reporte
+time.sleep(310)  # 5+ minutos según REPORT_INTERVAL
+
+# Terminar bot
+bot_process.terminate()
+bot_process.wait()
+EOF
+
+      - name: Upload generated reports
         uses: actions/upload-artifact@v4
         with:
           name: kucoin-bot-reports
