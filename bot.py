@@ -137,7 +137,6 @@ metrics = {"capital": 100, "trades":0, "wins":0, "losses":0}
 
 while True:
     try:
-        global LAST_REPORT
         if POSITION is None:
             signal = scan()
             if signal:
