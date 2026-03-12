@@ -3,12 +3,12 @@ name: Run KuCoin Bot Live Persistent
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/10 * * * *"   # Se ejecuta cada 10 minutos (opcional)
+    - cron: "*/10 * * * *"  # Opcional
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 120       # Suficiente para sesiones largas
+    timeout-minutes: 120
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -22,24 +22,16 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run bot live with periodic report upload
+      - name: Run bot
         run: |
-          echo "Starting KuCoin Bot loop..."
-          python - <<'EOF'
-import subprocess, time, os
-REPORT_INTERVAL = 300
-while True:
-    if not hasattr(globals(), "bot_started"):
-        globals()["bot_started"] = True
-        subprocess.Popen(["python", "bot.py"])   # Ejecuta bot.py en segundo plano
-    time.sleep(REPORT_INTERVAL)
-    if os.path.exists("reports/"):
-        # ⚠️ Este comando NO es válido en GitHub CLI
-        # Debes usar actions/upload-artifact en un step aparte,
-        # o subir los archivos mediante gh api u otro método.
-        subprocess.run([
-            "gh", "workflow", "upload-artifact",
-            "--name", "kucoin-bot-reports",
-            "--path", "reports/"
-        ])
-EOF
+          echo "Starting KuCoin Bot..."
+          python bot.py &      # Corre en background
+          BOT_PID=$!
+          sleep 300            # Espera 5 min (o el tiempo que quieras)
+          kill $BOT_PID || true
+
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: kucoin-bot-reports
+          path: reports/
