@@ -1,38 +1,28 @@
-name: Run KuCoin Bot Simulation Persistent
+name: Run KuCoin Bot Live
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # Lanzamiento manual
   schedule:
-    - cron: "*/5 * * * *"  # Ejecuta cada 5 minutos para subir reportes
+    - cron: "*/10 * * * *"  # Opcional: cada 10 min para iniciar una sesión
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 60  # Evita que GitHub lo cierre prematuramente
     steps:
-      # 1️⃣ Clonar el repositorio
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Configurar Python
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
 
-      # 3️⃣ Instalar dependencias
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # 4️⃣ Ejecutar bot de forma persistente en background
-      - name: Run bot persistently
+      - name: Run bot live
         run: |
-          mkdir -p reports
-          nohup python bot.py > bot.log 2>&1 &
-
-      # 5️⃣ Subir reportes acumulados cada 5 minutos
-      - name: Upload accumulated reports
-        uses: actions/upload-artifact@v4
-        with:
-          name: kucoin-bot-reports
-          path: reports/
+          echo "Starting KuCoin Bot loop..."
+          python bot.py  # Corre en foreground, logs visibles en Actions
