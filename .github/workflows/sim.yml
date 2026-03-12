@@ -1,14 +1,14 @@
-name: Run KuCoin Bot Live
+name: Run KuCoin Bot Live Persistent
 
 on:
-  workflow_dispatch:  # Lanzamiento manual
+  workflow_dispatch:
   schedule:
-    - cron: "*/10 * * * *"  # Opcional: cada 10 min para iniciar una sesión
+    - cron: "*/10 * * * *"  # Opcional, lanza cada 10 min
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 60  # Evita que GitHub lo cierre prematuramente
+    timeout-minutes: 120  # suficiente para sesiones largas
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -22,7 +22,22 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run bot live
+      - name: Run bot live with periodic report upload
         run: |
           echo "Starting KuCoin Bot loop..."
-          python bot.py  # Corre en foreground, logs visibles en Actions
+          # Loop que sube reportes cada 5 min sin interrumpir el bot
+          python - <<'EOF'
+import subprocess, time, os
+REPORT_INTERVAL = 300
+while True:
+    if not hasattr(globals(), "bot_started"):
+        globals()["bot_started"] = True
+        subprocess.Popen(["python", "bot.py"])
+    time.sleep(REPORT_INTERVAL)
+    if os.path.exists("reports/"):
+        subprocess.run([
+            "gh", "workflow", "upload-artifact",
+            "--name", "kucoin-bot-reports",
+            "--path", "reports/"
+        ])
+EOF
